@@ -1,0 +1,12 @@
+# Build artifacts
+bin/mvci32.dll
+*.zip
+*.log
+
+# MSYS2 / local build noise
+third_party/MVCI-J2534/.*
+third_party/MVCI-J2534/*.o
+
+# PowerShell
+*.ps1xml
+

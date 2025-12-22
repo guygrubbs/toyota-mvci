@@ -1,0 +1,44 @@
+name: build-mvci32
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - name: Setup MSYS2 (mingw-w64 i686)
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW32
+          update: true
+          install: >-
+            mingw-w64-i686-gcc
+            mingw-w64-i686-make
+
+      - name: Build mvci32.dll
+        shell: msys2 {0}
+        run: |
+          cd third_party/MVCI-J2534
+          make
+
+      - name: Copy artifact
+        run: |
+          New-Item -ItemType Directory -Force -Path bin | Out-Null
+          Copy-Item third_party\MVCI-J2534\mvci32.dll bin\mvci32.dll -Force
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: mvci32
+          path: bin/mvci32.dll
+
