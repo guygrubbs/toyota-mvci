@@ -1,7 +1,9 @@
 [CmdletBinding()]
 param(
-  # Where mvci32.dll will be installed (do not use ProgramFiles for 32-bit apps)
-  [string]$InstallDir = "$env:ProgramFiles(x86)\MVCI-J2534",
+	  # Where mvci32.dll will be installed. Default to the standard 32-bit Program Files path.
+	  # Use Environment.SpecialFolder.ProgramFilesX86 instead of $env:ProgramFiles(x86) in a
+	  # bare expandable string to avoid malformed paths like "C:\Program Files (x86)(x86)".
+	  [string]$InstallDir = (Join-Path ([Environment]::GetFolderPath('ProgramFilesX86')) 'MVCI-J2534'),
 
   # Optional: automatically install FTDI drivers from the official FTDI package.
   # Set -AcceptFtdiLicense to enable.
@@ -80,6 +82,63 @@ function Install-MvciDll([string]$DestDir) {
   $dst = Join-Path $DestDir "mvci32.dll"
   Copy-Item $src.Path $dst -Force
   return $dst
+}
+
+function Get-NewestFtd2xxFromDriverStore {
+  $driverStore = Join-Path $env:SystemRoot 'System32\DriverStore\FileRepository'
+  if (-not (Test-Path $driverStore)) {
+    Write-Host "Windows DriverStore not found at: $driverStore"
+    return $null
+  }
+
+  $candidates = Get-ChildItem -Path $driverStore -Recurse -Filter 'ftd2xx.dll' -ErrorAction SilentlyContinue |
+    Where-Object { $_.FullName -like "*\i386\*" -or $_.FullName -like "*\x86\*" } |
+    Sort-Object LastWriteTime -Descending
+
+  if (-not $candidates -or $candidates.Count -eq 0) {
+    return $null
+  }
+
+  return $candidates[0]
+}
+
+function Install-Ftd2xxRuntime([string]$DestInstallDir) {
+  $src = Get-NewestFtd2xxFromDriverStore
+  if ($null -eq $src) {
+    throw "No FTD2XX.dll was found in the Windows DriverStore. The FTDI D2XX runtime does not appear to be installed. Install the FTDI CDM drivers first (for example by running Install-MVCI.ps1 with -InstallFtdiDrivers -AcceptFtdiLicense or letting Windows Update install them), then re-run Install-MVCI.ps1."
+  }
+
+  $wowDir = Join-Path $env:SystemRoot 'SysWOW64'
+  if (-not (Test-Path $wowDir)) {
+    throw "Expected 32-bit system directory '$wowDir' was not found. Cannot install FTD2XX runtime."
+  }
+
+  $destWow = Join-Path $wowDir 'FTD2XX.dll'
+  $hadExisting = Test-Path $destWow
+
+  Write-Host "Using FTD2XX.dll from DriverStore: $($src.FullName)"
+  Write-Host "Copying FTD2XX.dll to 32-bit system directory: $destWow"
+  Copy-Item $src.FullName $destWow -Force
+
+  $destMvc = Join-Path $DestInstallDir 'FTD2XX.dll'
+  Write-Host "Copying FTD2XX.dll beside mvci32.dll: $destMvc"
+  Copy-Item $src.FullName $destMvc -Force
+
+  # Persist minimal installer state so Uninstall-MVCI.ps1 can safely clean up
+  # the runtime it installed without touching DriverStore entries.
+  $stateDir = Join-Path $env:ProgramData 'MVCI-J2534'
+  New-Item -ItemType Directory -Force -Path $stateDir | Out-Null
+  $statePath = Join-Path $stateDir 'installer_state.json'
+
+  $state = [ordered]@{
+    SysWowFtd2xxPath                 = $destWow
+    SysWowFtd2xxInstalledByInstaller = (-not $hadExisting)
+    DriverStoreSource                = $src.FullName
+    MvcInstallDir                    = $DestInstallDir
+    MvcFtd2xxPath                    = $destMvc
+  }
+
+  $state | ConvertTo-Json | Set-Content -Path $statePath -Encoding UTF8
 }
 
 function Install-FtdiDrivers-FromZip([string]$ZipPath) {
@@ -177,6 +236,12 @@ if ($InstallFtdiDrivers) {
 }
 
 $dllPath = Install-MvciDll -DestDir $InstallDir
+
+if ($UseD2XX -ne 0) {
+  Install-Ftd2xxRuntime -DestInstallDir $InstallDir
+} else {
+  Write-Host "UseD2XX is 0; skipping FTD2XX.dll runtime copy."
+}
 
 # Register both 32-bit and 64-bit registry views.
 # Many J2534 apps (Techstream commonly) are 32-bit; registering Registry32 is important.
