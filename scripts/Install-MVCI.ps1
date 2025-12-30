@@ -87,23 +87,66 @@ function Install-FtdiDrivers-FromZip([string]$ZipPath) {
 
   $tmp = Join-Path $env:TEMP ("ftdi_" + [guid]::NewGuid().ToString("N"))
   New-Item -ItemType Directory -Force -Path $tmp | Out-Null
-  Expand-Archive -Path $ZipPath -DestinationPath $tmp -Force
+  try {
+    Expand-Archive -Path $ZipPath -DestinationPath $tmp -Force
+  } catch {
+    throw "Failed to extract FTDI package zip '$ZipPath'. The downloaded file may be HTML or corrupted. Inner error: $($_.Exception.Message)"
+  }
 
-  # Find INF files and install via pnputil (reliable for automation).
+  # Preferred path: find INF files and install via pnputil (reliable for automation).
   $infs = Get-ChildItem -Path $tmp -Recurse -Filter *.inf | Select-Object -ExpandProperty FullName
-  if (-not $infs -or $infs.Count -eq 0) {
-    throw "No INF files found after extracting FTDI zip."
+  if ($infs -and $infs.Count -gt 0) {
+    foreach ($inf in $infs) {
+      Write-Host "Installing driver INF: $inf"
+      & pnputil.exe /add-driver $inf /install | Out-Host
+    }
+    return
   }
 
-  foreach ($inf in $infs) {
-    Write-Host "Installing driver INF: $inf"
-    & pnputil.exe /add-driver $inf /install | Out-Host
+  # Some FTDI packages (e.g., CDM2123620_Setup.zip) contain only a setup EXE.
+  # In that case, fall back to running the official FTDI installer executable.
+  $setupExe = Get-ChildItem -Path $tmp -Recurse -Filter *.exe |
+    Where-Object { $_.Name -match 'CDM.*Setup' -or $_.Name -match 'CDM[0-9]+' } |
+    Select-Object -First 1
+
+  if ($null -ne $setupExe) {
+    Write-Host "No INF files found after extracting FTDI zip. " -NoNewline
+    Write-Host "Falling back to running FTDI setup executable: $($setupExe.FullName)"
+    Write-Host "This runs the official FTDI installer from FTDI's site. Press Ctrl+C now to abort if you do not accept the FTDI license."
+
+    # Many FTDI installers support /quiet; if not, this will still launch the UI.
+    Start-Process -FilePath $setupExe.FullName -ArgumentList "/quiet" -Wait
+    return
   }
+
+  throw "No INF files or setup executables found after extracting FTDI zip at '$tmp'. Check that the package is a valid FTDI driver download."
 }
 
 function Download-File([string]$Url, [string]$OutPath) {
   Write-Host "Downloading: $Url"
-  Invoke-WebRequest -Uri $Url -OutFile $OutPath
+  try {
+    $resp = Invoke-WebRequest -Uri $Url -OutFile $OutPath -UseBasicParsing -PassThru
+  } catch {
+    throw "Failed to download FTDI package from '$Url'. HTTP/network error: $($_.Exception.Message). " +
+          "You may be behind a firewall or the URL may have changed. Download the package manually from FTDI and re-run with -FtdiPackageZipPath <path>."
+  }
+
+  # Basic sanity check that we received a ZIP (starts with 'PK').
+  try {
+    $fs = [System.IO.File]::OpenRead($OutPath)
+    try {
+      $buffer = New-Object byte[] 2
+      $read = $fs.Read($buffer, 0, 2)
+      if ($read -ne 2 -or $buffer[0] -ne 0x50 -or $buffer[1] -ne 0x4B) {
+        throw "Downloaded file does not look like a ZIP (missing PK header). It may be an HTML error page instead of the driver package."
+      }
+    } finally {
+      $fs.Dispose()
+    }
+  } catch {
+    throw "Downloaded FTDI package to '$OutPath' but validation failed: $($_.Exception.Message). " +
+          "Download the package manually and use -FtdiPackageZipPath <path>."
+  }
 }
 
 # Main
@@ -116,8 +159,18 @@ if ($InstallFtdiDrivers) {
 
   $zip = $FtdiPackageZipPath
   if ([string]::IsNullOrWhiteSpace($zip)) {
-    $zip = Join-Path $env:TEMP ("ftdi_cdm_" + [guid]::NewGuid().ToString("N") + ".zip")
-    Download-File -Url $FtdiPackageUrl -OutPath $zip
+      # Prefer a repo-bundled FTDI CDM package if present.
+      $bundledPath = Join-Path $PSScriptRoot "..\third_party\ftdi\CDM2123620_Setup.zip"
+      $resolvedBundled = Resolve-Path $bundledPath -ErrorAction SilentlyContinue
+      if ($null -ne $resolvedBundled) {
+        $zip = $resolvedBundled.Path
+        Write-Host "Using bundled FTDI driver package: $zip"
+      }
+    }
+
+    if ([string]::IsNullOrWhiteSpace($zip)) {
+      $zip = Join-Path $env:TEMP ("ftdi_cdm_" + [guid]::NewGuid().ToString("N") + ".zip")
+      Download-File -Url $FtdiPackageUrl -OutPath $zip
   }
   Install-FtdiDrivers-FromZip -ZipPath $zip
   Write-Host "FTDI driver install attempted. (Windows Update may also install silently when online.)"

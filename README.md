@@ -44,8 +44,28 @@ Option B: Local build (Windows)
 
 ## FTDI drivers
 FTDI drivers can be installed automatically via Windows Update (internet connected).
-If not, install via FTDI’s official CDM installer or use the script’s INF-install path.
+If not, this repo is designed to use FTDI's **official CDM installer package**, which is bundled in
+the repo.
+
+- This repo includes FTDI's CDM ZIP (e.g., `CDM2123620_Setup.zip`) at:
+  - `third_party/ftdi/CDM2123620_Setup.zip`
+- `scripts/Install-MVCI.ps1` will, when invoked with `-InstallFtdiDrivers -AcceptFtdiLicense`:
+  1. Prefer the bundled ZIP at `third_party/ftdi/CDM2123620_Setup.zip`.
+  2. Otherwise, download the official package from `$FtdiPackageUrl`.
+  3. As a final override, you can always pass `-FtdiPackageZipPath` to point at a manually downloaded ZIP.
+
 From FTDI’s own guidance, the user should accept the FTDI driver license terms.
+
+## Components and versions
+
+- **J2534 API**: 04.04 (`PassThruSupport.04.04` registry key; see `j2534_v0404.h` in the MVCI-J2534 project).
+- **PassThru DLL**: 32-bit `bin\\mvci32.dll` built from the open-source `MVCI-J2534` project (MIT). The exact binary
+  version is whichever commit you build in CI or locally; track that in your own release notes.
+- **FTDI USB driver package**: official FTDI CDM package `CDM2123620_Setup.zip` (Windows 10/11, VCP + D2XX) used
+  either from the bundled `third_party/ftdi/CDM2123620_Setup.zip` or downloaded from `$FtdiPackageUrl`.
+
+If you change the upstream MVCI-J2534 commit you build or move to a newer FTDI CDM package, update this section so
+your release notes remain reproducible.
 
 ## Support bundle
 If you run into trouble, run:
@@ -111,8 +131,11 @@ If you want the script to attempt FTDI driver install (requires explicit accepta
 ./scripts/Install-MVCI.ps1 -InstallFtdiDrivers -AcceptFtdiLicense
 ```
 
-That will download FTDI’s official package and install INFs via `pnputil`. If FTDI changes the
-filename, update `$FtdiPackageUrl` in `scripts/Install-MVCI.ps1`.
+By default, this will use the bundled FTDI CDM ZIP at `third_party/ftdi/CDM2123620_Setup.zip` if it
+exists. Otherwise it will download FTDI’s official package from `$FtdiPackageUrl` and install the
+drivers (preferring direct INF install via `pnputil`, falling back to FTDI's own setup EXE if
+necessary). If FTDI changes the filename or URL, update `$FtdiPackageUrl` in
+`scripts/Install-MVCI.ps1`.
 
 ### 4) Validate the J2534 DLL loads
 
@@ -120,6 +143,11 @@ filename, update `$FtdiPackageUrl` in `scripts/Install-MVCI.ps1`.
 ./scripts/Test-MVCI.ps1
 ./scripts/List-PassThru.ps1
 ```
+
+`Test-MVCI.ps1` loads `mvci32.dll`, which is a 32-bit library. If you run it from a 64-bit
+PowerShell, the script will automatically re-launch itself in 32-bit Windows PowerShell
+(x86) so the DLL can be loaded. If a 32-bit host is not available, you will see an error
+with instructions to run it manually from a 32-bit PowerShell.
 
 ### 5) Configure Techstream
 
